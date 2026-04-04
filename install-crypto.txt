@@ -1,0 +1,1 @@
+expo-crypto 已安裝，可直接使用 Crypto.getRandomBytesAsync
