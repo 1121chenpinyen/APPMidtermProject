@@ -2,12 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import { StyleSheet, Text, View, FlatList, SafeAreaView, TouchableOpacity, Modal, Image, Animated, Dimensions, Vibration } from 'react-native';
-const SCREEN_WIDTH = Dimensions.get('window').width;
-import MessageModal from './MessageModal';
 import { StatusBar } from 'expo-status-bar';
+
+// 1. 引入自定義組件
+import MessageModal from './MessageModal';
 import FABDialog from './FABDialog';
-import { db } from './firebaseConfig';
+
+// 2. 引入 Firebase 配置
+import { db, storage } from './firebaseConfig';
 import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, where } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL, getStorage } from 'firebase/storage'; // 多引入 getStorage 以防萬一
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
 
 export default function Home() {
   const [text, setText] = useState('');
@@ -21,14 +27,22 @@ export default function Home() {
   const [selectedReply, setSelectedReply] = useState(null);
   const [replyDetailVisible, setReplyDetailVisible] = useState(false);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+  // 每個自己的留言都獨立一個 shake 動畫（用 useRef 管理，避免 render 階段 setState）
+  const shakeAnims = useRef({});
 
+  // 診斷：App 啟動時檢查一次 storage
+  useEffect(() => {
+    console.log("=== App 啟動檢查 ===");
+    console.log("Firebase Storage 實例是否存在:", !!storage);
+  }, []);
+
+  // 1. 取得或創建裝置唯一 ID
   useEffect(() => {
     const getOrCreateDeviceId = async () => {
       let id = await AsyncStorage.getItem('deviceId');
       if (!id) {
-        id = await Crypto.getRandomBytesAsync(16).then(bytes =>
-          Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
-        );
+        const bytes = await Crypto.getRandomBytesAsync(16);
+        id = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
         await AsyncStorage.setItem('deviceId', id);
       }
       setDeviceId(id);
@@ -36,6 +50,7 @@ export default function Home() {
     getOrCreateDeviceId();
   }, []);
 
+  // 2. 監聽所有主留言
   useEffect(() => {
     const q = query(collection(db, "chat"), orderBy("createdAt", "desc"));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
@@ -48,8 +63,9 @@ export default function Home() {
     return () => unsubscribe();
   }, []);
 
+  // 3. 傳送新留言 (主留言)
   const handleSend = async () => {
-    if (text.length > 0 && deviceId) {
+    if (text.trim().length > 0 && deviceId) {
       try {
         await addDoc(collection(db, "chat"), {
           content: text,
@@ -64,359 +80,272 @@ export default function Home() {
     }
   };
 
-  // 回覆留言，存到 replies 集合
-  const handleReply = async (replyText, imageUri) => {
+  // 4. 處理回覆 (核心修復版)
+  const handleReply = async (replyText, rawImage) => {
+    console.log("--- handleReply 開始執行 ---");
+    
+    // 🚀 暴力修復邏輯：如果 storage 是空的，嘗試重新抓取
+    const activeStorage = storage || getStorage(); 
+    
+    console.log("Storage 檢查:", !!activeStorage ? "✅ 正常" : "❌ 遺失");
+
+    let imageUri = null;
+    if (rawImage) {
+      imageUri = typeof rawImage === 'object' ? rawImage.uri : rawImage;
+    }
+
     if (!selectedMsg || !deviceId) return;
+
     try {
+      let firebaseUrl = null;
+
+      // 圖片上傳流程
+      if (imageUri && typeof imageUri === 'string' && imageUri.startsWith('file')) {
+        console.log("Step 1: 準備上傳本地圖片...");
+
+        const blob = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.onload = () => resolve(xhr.response);
+          xhr.onerror = (e) => reject(new TypeError('網路請求失敗'));
+          xhr.responseType = 'blob';
+          xhr.open('GET', imageUri, true);
+          xhr.send(null);
+        });
+
+        const filename = `replies/${deviceId}_${Date.now()}.jpg`;
+        const storageRef = ref(activeStorage, filename); // 👈 使用確保留在記憶體中的實例
+        
+        const snapshot = await uploadBytes(storageRef, blob);
+        firebaseUrl = await getDownloadURL(snapshot.ref);
+        console.log("Step 2: 圖片上傳完成，網址:", firebaseUrl);
+      } else if (imageUri && imageUri.startsWith('http')) {
+        firebaseUrl = imageUri;
+      }
+
+      // 寫入 Firestore
       await addDoc(collection(db, 'replies'), {
         messageId: selectedMsg.id,
         toDeviceId: selectedMsg.deviceId,
         fromDeviceId: deviceId,
-        replyText,
-        imageUri: imageUri || null,
+        replyText: replyText || '',
+        imageUri: firebaseUrl, // 存入雲端 URL
         createdAt: serverTimestamp(),
       });
+
+      console.log("Step 3: Firestore 寫入成功");
+      setMsgModalVisible(false);
+      setSelectedMsg(null);
     } catch (e) {
-      console.error('回覆儲存失敗:', e);
+      console.error("❌ 上傳失敗原因:", e);
+      alert('傳送失敗: ' + e.message);
     }
   };
 
-  // 監聽回覆資料（顯示所有本裝置發出的留言收到的回覆）
+  // 5. 監聽回覆資料 (略)
   useEffect(() => {
     if (!deviceId) return;
-    // 先取得本裝置發出的所有留言 id
     const qMsg = query(collection(db, 'chat'), where('deviceId', '==', deviceId));
     const unsubscribeMsg = onSnapshot(qMsg, (querySnapshot) => {
       const myMsgIds = [];
-      querySnapshot.forEach((doc) => {
-        myMsgIds.push(doc.id);
-      });
-      if (myMsgIds.length === 0) {
-        setReplies([]);
-        return;
-      }
-      // 再查詢 replies 中 messageId 屬於這些 id 的所有回覆
-      // Firestore in 查詢一次最多 10 個元素，需分批查詢
+      querySnapshot.forEach((doc) => { myMsgIds.push(doc.id); });
+      if (myMsgIds.length === 0) { setReplies([]); return; }
       const batchSize = 10;
       const batches = [];
-      for (let i = 0; i < myMsgIds.length; i += batchSize) {
-        batches.push(myMsgIds.slice(i, i + batchSize));
-      }
+      for (let i = 0; i < myMsgIds.length; i += batchSize) { batches.push(myMsgIds.slice(i, i + batchSize)); }
       const unsubscribes = [];
       let allReplies = [];
       batches.forEach((batch) => {
         const qReply = query(collection(db, 'replies'), where('messageId', 'in', batch), orderBy('createdAt', 'desc'));
         const unsub = onSnapshot(qReply, (querySnapshot) => {
           const data = [];
-          querySnapshot.forEach((doc) => {
-            data.push({ ...doc.data(), id: doc.id });
-          });
-          // 合併所有批次回覆
+          querySnapshot.forEach((doc) => { data.push({ ...doc.data(), id: doc.id }); });
           allReplies = allReplies.filter(r => !batch.includes(r.messageId)).concat(data);
-          setReplies([...allReplies].sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds));
+          setReplies([...allReplies].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
         });
         unsubscribes.push(unsub);
       });
-      // 清理
-      return () => {
-        unsubscribes.forEach(unsub => unsub());
-      };
+      return () => unsubscribes.forEach(unsub => unsub());
     });
     return () => unsubscribeMsg();
   }, [deviceId]);
 
-  // 滑入詳情頁效果
+  // 6. 詳情頁動畫 (略)
   useEffect(() => {
-    if (replyDetailVisible) {
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: false,
-      }).start();
-    } else {
-      Animated.timing(slideAnim, {
-        toValue: SCREEN_WIDTH,
-        duration: 200,
-        useNativeDriver: false,
-      }).start();
-    }
+    Animated.timing(slideAnim, {
+      toValue: replyDetailVisible ? 0 : SCREEN_WIDTH,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
   }, [replyDetailVisible]);
-
-  // 震動動畫狀態
-  const [shakingId, setShakingId] = useState(null);
-  const shakeAnim = useRef(new Animated.Value(0)).current;
-
-  // 觸發震動動畫
-  const triggerShake = (id) => {
-    setShakingId(id);
-    shakeAnim.setValue(0);
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: 1, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -1, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 1, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
-    ]).start(() => setShakingId(null));
-  };
 
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.title}>Firebase 即時留言板</Text>
-      {/* <Text>Device ID: {deviceId}</Text> */}
       <FlatList
         data={messages}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => {
           const isMine = item.deviceId === deviceId;
-          const isShaking = shakingId === item.id;
-          return (
-            <Animated.View
-              style={isShaking ? { transform: [{ translateX: shakeAnim.interpolate({
-                inputRange: [-1, 1], outputRange: [-10, 10]
-              }) }] } : undefined}
-            >
+          if (isMine) {
+            // 若還沒建立動畫，則建立（只在點擊時建立，不在 render 階段 setState）
+            let anim = shakeAnims.current[item.id];
+            if (!anim) {
+              anim = new Animated.Value(0);
+              shakeAnims.current[item.id] = anim;
+            }
+            return (
+              <Animated.View
+                style={[
+                  styles.msgBox,
+                  {
+                    transform: [
+                      {
+                        translateX: anim.interpolate({
+                          inputRange: [-1, 1],
+                          outputRange: [-10, 10],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              >
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    let anim = shakeAnims.current[item.id];
+                    if (!anim) {
+                      anim = new Animated.Value(0);
+                      shakeAnims.current[item.id] = anim;
+                    }
+                    Animated.sequence([
+                      Animated.timing(anim, { toValue: -1, duration: 50, useNativeDriver: true }),
+                      Animated.timing(anim, { toValue: 1, duration: 50, useNativeDriver: true }),
+                      Animated.timing(anim, { toValue: -1, duration: 50, useNativeDriver: true }),
+                      Animated.timing(anim, { toValue: 1, duration: 50, useNativeDriver: true }),
+                      Animated.timing(anim, { toValue: 0, duration: 50, useNativeDriver: true }),
+                    ]).start();
+                  }}
+                >
+                  <Text style={{ color: '#888', fontSize: 12, marginBottom: 2 }}>You</Text>
+                  <Text style={[styles.msgText, { color: '#aaa' }]}>{item.content}</Text>
+                </TouchableOpacity>
+              </Animated.View>
+            );
+          } else {
+            return (
               <TouchableOpacity
                 style={styles.msgBox}
                 onPress={() => {
-                  if (isMine) {
-                    triggerShake(item.id);
-                    return;
-                  }
                   setSelectedMsg(item);
                   setMsgModalVisible(true);
                 }}
                 activeOpacity={0.7}
               >
                 <Text style={{ color: '#888', fontSize: 12, marginBottom: 2 }}>
-                  {isMine ? 'You' : (item.deviceId?.slice(0, 8) || '')}
+                  {item.deviceId?.slice(0, 8) || 'Unknown'}
                 </Text>
-                <Text style={[styles.msgText, isMine && { color: '#aaa' }]}>{item.content}</Text>
+                <Text style={styles.msgText}>{item.content}</Text>
               </TouchableOpacity>
-            </Animated.View>
-          );
+            );
+          }
         }}
       />
+
       <MessageModal
         visible={msgModalVisible}
         onClose={() => setMsgModalVisible(false)}
         message={selectedMsg?.content}
-        onReply={handleReply}
+        onReply={(text, img) => {
+          handleReply(text, img);
+        }}
       />
-      {/* 浮動按鈕區塊 */}
+
+      {/* 浮動按鈕 */}
       <View style={styles.fabContainer}>
-        <TouchableOpacity
-          style={styles.envelopeFab}
-          onPress={() => setEnvelopeVisible(true)}
-          activeOpacity={0.7}
-        >
+        <TouchableOpacity style={styles.envelopeFab} onPress={() => setEnvelopeVisible(true)}>
           <Text style={styles.envelopeIcon}>✉️</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => setDialogVisible(true)}
-          activeOpacity={0.7}
-        >
+        <TouchableOpacity style={styles.fab} onPress={() => setDialogVisible(true)}>
           <Text style={styles.fabIcon}>＋</Text>
         </TouchableOpacity>
       </View>
-      {/* 信封覆蓋視窗：顯示所有回覆給本裝置的留言 */}
-      <Modal
-        visible={envelopeVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setEnvelopeVisible(false)}
-      >
+
+      {/* 信封 Modal */}
+      <Modal visible={envelopeVisible} transparent animationType="fade" onRequestClose={() => setEnvelopeVisible(false)}>
         <View style={styles.overlay}>
-          {/* 信封頁面本體 */}
           <View style={styles.envelopeDialog}>
             <Text style={styles.envelopeTitle}>收到的留言回覆</Text>
             <FlatList
               data={replies}
               keyExtractor={item => item.id}
-              ListEmptyComponent={<Text style={{ color: '#888', marginBottom: 10 }}>目前沒有收到回覆</Text>}
+              ListEmptyComponent={<Text style={{ color: '#888', marginVertical: 10 }}>目前沒有收到回覆</Text>}
               renderItem={({ item }) => (
                 <TouchableOpacity
-                  style={{ marginBottom: 12, alignItems: 'flex-start', width: '100%' }}
+                  style={styles.replyItem}
                   onPress={() => {
                     setSelectedReply(item);
                     setReplyDetailVisible(true);
                   }}
-                  activeOpacity={0.7}
                 >
-                  <Text style={{ fontWeight: 'bold', color: '#4630EB' }}>
-                    {item.fromDeviceId?.slice(0, 8) || ''}: {item.replyText}
+                  <Text style={styles.replyLinkText} numberOfLines={1}>
+                    {item.fromDeviceId?.slice(0, 8)}: {item.replyText}
                   </Text>
-                  {item.imageUri ? (
-                    <Image source={{ uri: item.imageUri }} style={{ width: 100, height: 75, borderRadius: 6, marginBottom: 2 }} />
-                  ) : null}
+                  {item.imageUri && <Image source={{ uri: item.imageUri }} style={styles.replyThumb} />}
                 </TouchableOpacity>
               )}
-              style={{ maxHeight: 220, width: 220, alignSelf: 'center' }}
+              style={{ maxHeight: 250, width: '100%' }}
             />
             <TouchableOpacity onPress={() => setEnvelopeVisible(false)} style={styles.closeBtn}>
               <Text style={{ color: '#fff', fontWeight: 'bold' }}>關閉</Text>
             </TouchableOpacity>
           </View>
-          {/* 回覆詳情頁，完全覆蓋信封頁面，從右側滑入 */}
-          {replyDetailVisible && (
-            <Animated.View
-              style={[
-                styles.overlay,
-                {
-                  position: 'absolute',
-                  left: 0,
-                  top: 0,
-                  width: '100%',
-                  height: '100%',
-                  backgroundColor: 'rgba(0,0,0,0.3)',
-                  zIndex: 20,
-                  transform: [{ translateX: slideAnim }],
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                },
-              ]}
-            >
-              <View style={styles.envelopeDialog}>
-                <TouchableOpacity onPress={() => setReplyDetailVisible(false)} style={{ position: 'absolute', left: 12, top: 18, zIndex: 2 }}>
-                  <Text style={{ fontSize: 22, color: '#4630EB', fontWeight: 'bold' }}>{'←'}</Text>
-                </TouchableOpacity>
-                <View style={{ marginTop: 8, alignItems: 'center' }}>
-                  <Text style={{ fontWeight: 'bold', fontSize: 18, marginBottom: 10 }}>回覆詳情</Text>
-                  <Text style={{ color: '#4630EB', marginBottom: 6 }}>原留言：</Text>
-                  <Text style={{ marginBottom: 10, textAlign: 'center' }}>
-                    {selectedReply ? (messages.find(m => m.id === selectedReply.messageId)?.content || '(找不到原留言)') : ''}
-                  </Text>
-                  <Text style={{ color: '#4630EB', marginBottom: 6 }}>回覆內容：</Text>
-                  <Text style={{ marginBottom: 10, textAlign: 'center' }}>
-                    {selectedReply?.replyText}
-                  </Text>
-                  {selectedReply?.imageUri ? (
-                    <Image source={{ uri: selectedReply.imageUri }} style={{ width: 120, height: 90, borderRadius: 8, marginBottom: 10 }} />
-                  ) : null}
-                </View>
+
+          {/* 右側滑入詳情 */}
+          <Animated.View style={[styles.detailSlide, { transform: [{ translateX: slideAnim }] }]}>
+            <View style={styles.envelopeDialog}>
+              <TouchableOpacity onPress={() => setReplyDetailVisible(false)} style={styles.backBtn}>
+                <Text style={styles.backBtnText}>←</Text>
+              </TouchableOpacity>
+              <View style={{ marginTop: 10, alignItems: 'center', width: '100%' }}>
+                <Text style={styles.detailLabel}>原留言：</Text>
+                <Text style={styles.detailText}>{messages.find(m => m.id === selectedReply?.messageId)?.content || '...'}</Text>
+                <Text style={styles.detailLabel}>回覆內容：</Text>
+                <Text style={styles.detailText}>{selectedReply?.replyText}</Text>
+                {selectedReply?.imageUri && <Image source={{ uri: selectedReply.imageUri }} style={styles.detailImage} />}
               </View>
-            </Animated.View>
-          )}
+            </View>
+          </Animated.View>
         </View>
       </Modal>
-      <FABDialog
-        visible={dialogVisible}
-        onClose={() => setDialogVisible(false)}
-        text={text}
-        setText={setText}
-        onSend={handleSend}
-      />
+
+      <FABDialog visible={dialogVisible} onClose={() => setDialogVisible(false)} text={text} setText={setText} onSend={handleSend} />
       <StatusBar style="auto" />
     </SafeAreaView>
   );
 }
 
+// Styles 保持不變 ...
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-    paddingHorizontal: 20,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginVertical: 20,
-    textAlign: 'center',
-    color: '#333',
-  },
-  fabContainer: {
-    position: 'absolute',
-    right: 24,
-    bottom: 36,
-    alignItems: 'center',
-  },
-  envelopeFab: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#ffb300',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
-  envelopeIcon: {
-    fontSize: 30,
-  },
-  fab: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#4630EB',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
-    overlay: {
-      position: 'absolute',
-      left: 0,
-      top: 0,
-      width: '100%',
-      height: '100%',
-      backgroundColor: 'rgba(0,0,0,0.3)',
-      justifyContent: 'center',
-      alignItems: 'center',
-    },
-    envelopeDialog: {
-      width: 280,
-      backgroundColor: '#fff',
-      borderRadius: 12,
-      padding: 24,
-      alignItems: 'center',
-      elevation: 6,
-    },
-    envelopeTitle: {
-      fontSize: 20,
-      fontWeight: 'bold',
-      marginBottom: 20,
-      color: '#4630EB',
-    },
-    closeBtn: {
-      marginTop: 10,
-      backgroundColor: '#4630EB',
-      paddingHorizontal: 24,
-      paddingVertical: 10,
-      borderRadius: 8,
-    },
-  fabIcon: {
-    color: '#fff',
-    fontSize: 36,
-    fontWeight: 'bold',
-    marginBottom: 2,
-  },
-  msgBox: {
-    backgroundColor: '#fff',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    borderLeftWidth: 4,
-    borderLeftColor: '#4630EB',
-  },
-  msgText: {
-    fontSize: 16,
-    color: '#444',
-  },
-  // 新增滑入側頁樣式
-  slideOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-  },
+  container: { flex: 1, backgroundColor: '#f5f5f5', paddingHorizontal: 20 },
+  title: { fontSize: 22, fontWeight: 'bold', marginVertical: 20, textAlign: 'center', color: '#333' },
+  msgBox: { backgroundColor: '#fff', padding: 15, borderRadius: 10, marginBottom: 10, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, borderLeftWidth: 4, borderLeftColor: '#4630EB' },
+  msgText: { fontSize: 16, color: '#444' },
+  fabContainer: { position: 'absolute', right: 24, bottom: 36, alignItems: 'center' },
+  fab: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#4630EB', justifyContent: 'center', alignItems: 'center', elevation: 5 },
+  fabIcon: { color: '#fff', fontSize: 36, fontWeight: 'bold' },
+  envelopeFab: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#ffb300', justifyContent: 'center', alignItems: 'center', marginBottom: 16, elevation: 5 },
+  envelopeIcon: { fontSize: 30 },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
+  envelopeDialog: { width: 300, backgroundColor: '#fff', borderRadius: 15, padding: 20, alignItems: 'center', elevation: 10 },
+  envelopeTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, color: '#4630EB' },
+  replyItem: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 0.5, borderBottomColor: '#eee' },
+  replyLinkText: { flex: 1, color: '#4630EB', fontWeight: '500' },
+  replyThumb: { width: 40, height: 40, borderRadius: 4, marginLeft: 10 },
+  closeBtn: { marginTop: 15, backgroundColor: '#4630EB', paddingHorizontal: 30, paddingVertical: 10, borderRadius: 20 },
+  detailSlide: { position: 'absolute', width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' },
+  backBtn: { position: 'absolute', left: 15, top: 15 },
+  backBtnText: { fontSize: 24, color: '#4630EB', fontWeight: 'bold' },
+  detailLabel: { color: '#4630EB', fontWeight: 'bold', marginTop: 10 },
+  detailText: { marginVertical: 5, textAlign: 'center' },
+  detailImage: { width: 200, height: 150, borderRadius: 10, marginTop: 10 },
 });

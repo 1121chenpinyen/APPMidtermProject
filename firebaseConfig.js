@@ -1,5 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 // 請將下方的內容替換為你從 Firebase 網頁複製的內容
 const firebaseConfig = {
@@ -16,4 +17,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 
 // 匯出資料庫，讓 App.js 可以使用
-export const db = getFirestore(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+export { db, storage };
