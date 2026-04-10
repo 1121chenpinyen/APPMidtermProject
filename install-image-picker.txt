@@ -1,0 +1,6 @@
+# 安裝 expo-image-picker
+expo install expo-image-picker
+
+# 如果你用的是 bare React Native，請改用：
+npm install expo-image-picker
+npx pod-install
