@@ -1,16 +1,42 @@
 
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, TextInput, Keyboard, Platform } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, TextInput, Keyboard, Platform, ActivityIndicator } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import Constants from 'expo-constants';
 import { MaterialIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 
 export default function Profile() {
   const [avatar, setAvatar] = useState(null);
-  // 使用者ID（預設用裝置唯一ID，這裡先用隨機字串模擬）
-  const [userId, setUserId] = useState('user_' + Math.random().toString(36).substring(2, 8));
+  const [userId, setUserId] = useState('');
   const [editingId, setEditingId] = useState(false);
-  const [tempId, setTempId] = useState(userId);
+  const [tempId, setTempId] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  // 取得裝置唯一識別碼
+  const deviceId = Constants.deviceId || Constants.installationId || 'unknown_device';
+
+  // 進入頁面時，先查 AsyncStorage 有沒有自訂 ID
+  useEffect(() => {
+    const fetchId = async () => {
+      try {
+        const localId = await AsyncStorage.getItem('userId');
+        if (localId && localId.trim().length > 0) {
+          setUserId(localId);
+          setTempId(localId);
+        } else {
+          setUserId(deviceId);
+          setTempId(deviceId);
+        }
+      } catch (e) {
+        setUserId(deviceId);
+        setTempId(deviceId);
+      }
+      setLoading(false);
+    };
+    fetchId();
+  }, [deviceId]);
 
   // 選擇或拍照上傳頭像
   const pickImage = async () => {
@@ -59,6 +85,27 @@ export default function Profile() {
     );
   };
 
+  // 儲存自訂 ID 到 AsyncStorage
+  const saveId = async (newId) => {
+    setUserId(newId);
+    setEditingId(false);
+    setTempId(newId);
+    try {
+      await AsyncStorage.setItem('userId', newId);
+    } catch (e) {
+      Alert.alert('儲存失敗', '請檢查裝置儲存空間');
+    }
+    Keyboard.dismiss();
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.root, { justifyContent: 'center', alignItems: 'center' }]}> 
+        <ActivityIndicator size="large" color="#888" />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.root}>
       <View style={styles.header} />
@@ -80,15 +127,8 @@ export default function Profile() {
               value={tempId}
               onChangeText={setTempId}
               autoFocus
-              onSubmitEditing={() => {
-                setUserId(tempId);
-                setEditingId(false);
-                Keyboard.dismiss();
-              }}
-              onBlur={() => {
-                setUserId(tempId);
-                setEditingId(false);
-              }}
+              onSubmitEditing={() => saveId(tempId)}
+              onBlur={() => saveId(tempId)}
               maxLength={20}
             />
           ) : (

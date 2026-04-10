@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
+import { getUserId } from './getUserId';
 import { StyleSheet, Text, View, FlatList, SafeAreaView, TouchableOpacity, Modal, Image, Animated, Dimensions, Vibration } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
@@ -65,12 +66,14 @@ export default function Home() {
 
   // 3. 傳送新留言 (主留言)
   const handleSend = async () => {
-    if (text.trim().length > 0 && deviceId) {
+    if (text.trim().length > 0) {
       try {
+        const userId = await getUserId();
         await addDoc(collection(db, "chat"), {
           content: text,
           createdAt: serverTimestamp(),
-          deviceId: deviceId,
+          deviceId: deviceId, // 寫入裝置唯一識別碼
+          userId: userId,     // 寫入本機自訂名稱
         });
         setText('');
         setDialogVisible(false);
@@ -123,10 +126,12 @@ export default function Home() {
       }
 
       // 寫入 Firestore
+      const fromUserId = await getUserId();
       await addDoc(collection(db, 'replies'), {
         messageId: selectedMsg.id,
         toDeviceId: selectedMsg.deviceId,
         fromDeviceId: deviceId,
+        fromUserId: fromUserId,
         replyText: replyText || '',
         imageUri: firebaseUrl, // 存入雲端 URL
         createdAt: serverTimestamp(),
@@ -242,7 +247,7 @@ export default function Home() {
                 activeOpacity={0.7}
               >
                 <Text style={{ color: '#888', fontSize: 12, marginBottom: 2 }}>
-                  {item.deviceId?.slice(0, 8) || 'Unknown'}
+                  {item.userId || item.deviceId || 'Unknown'}
                 </Text>
                 <Text style={styles.msgText}>{item.content}</Text>
               </TouchableOpacity>
@@ -288,7 +293,9 @@ export default function Home() {
                   }}
                 >
                   <Text style={styles.replyLinkText} numberOfLines={1}>
-                    {item.fromDeviceId?.slice(0, 8)}: {item.replyText}
+                    {((item.fromUserId && item.fromUserId.length > 8)
+                      ? item.fromUserId.slice(0, 8) + '...'
+                      : (item.fromUserId || item.fromDeviceId || 'Unknown')) + ': ' + item.replyText}
                   </Text>
                   {item.imageUri && <Image source={{ uri: item.imageUri }} style={styles.replyThumb} />}
                 </TouchableOpacity>
