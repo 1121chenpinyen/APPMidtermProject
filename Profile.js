@@ -1,10 +1,15 @@
 
+
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, TextInput, Keyboard, Platform, ActivityIndicator } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import Constants from 'expo-constants';
+import { getDeviceId } from './getDeviceId';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { db, storage } from './firebaseConfig';
+import { collection, doc, setDoc, getDoc } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+
 
 
 export default function Profile() {
@@ -15,7 +20,26 @@ export default function Profile() {
   const [loading, setLoading] = useState(true);
 
   // 取得裝置唯一識別碼
-  const deviceId = Constants.deviceId || Constants.installationId || 'unknown_device';
+  const [deviceId, setDeviceId] = useState(null);
+  useEffect(() => {
+    getDeviceId().then(setDeviceId);
+  }, []);
+
+  // 取得頭像URL
+  useEffect(() => {
+    if (!deviceId) return;
+    const fetchProfile = async () => {
+      try {
+        const docRef = doc(collection(db, 'profiles'), deviceId);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.avatarUrl) setAvatar(data.avatarUrl);
+        }
+      } catch (e) {}
+    };
+    fetchProfile();
+  }, [deviceId]);
 
   // 進入頁面時，先查 AsyncStorage 有沒有自訂 ID
   useEffect(() => {
@@ -38,6 +62,28 @@ export default function Profile() {
     fetchId();
   }, [deviceId]);
 
+
+  // 上傳頭像到 Firebase Storage 並存 Firestore
+  const uploadAvatar = async (uri) => {
+    if (!deviceId) return;
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const filename = `avatars/${deviceId}_${Date.now()}.jpg`;
+      const storageRef = ref(storage, filename);
+      await uploadBytes(storageRef, blob);
+      const url = await getDownloadURL(storageRef);
+      // 存到 Firestore
+      await setDoc(doc(collection(db, 'profiles'), deviceId), { avatarUrl: url, userId: userId || deviceId }, { merge: true });
+      setAvatar(url);
+      // 同步存到本地 AsyncStorage，避免切換裝置時混用
+      await AsyncStorage.setItem('avatarUrl', url);
+      Alert.alert('頭像已更新！');
+    } catch (e) {
+      Alert.alert('頭像上傳失敗', e.message);
+    }
+  };
+
   // 選擇或拍照上傳頭像
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -52,7 +98,7 @@ export default function Profile() {
       quality: 1,
     });
     if (!result.canceled) {
-      setAvatar(result.assets[0].uri);
+      uploadAvatar(result.assets[0].uri);
     }
   };
 
@@ -68,7 +114,7 @@ export default function Profile() {
       quality: 1,
     });
     if (!result.canceled) {
-      setAvatar(result.assets[0].uri);
+      uploadAvatar(result.assets[0].uri);
     }
   };
 
