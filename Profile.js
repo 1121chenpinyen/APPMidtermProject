@@ -18,6 +18,7 @@ export default function Profile() {
   const [editingId, setEditingId] = useState(false);
   const [tempId, setTempId] = useState('');
   const [loading, setLoading] = useState(true);
+  const [money, setMoney] = useState(0);
 
   // 取得裝置唯一識別碼
   const [deviceId, setDeviceId] = useState(null);
@@ -25,7 +26,7 @@ export default function Profile() {
     getDeviceId().then(setDeviceId);
   }, []);
 
-  // 取得頭像URL
+  // 取得頭像URL與金幣
   useEffect(() => {
     if (!deviceId) return;
     const fetchProfile = async () => {
@@ -35,6 +36,7 @@ export default function Profile() {
         if (docSnap.exists()) {
           const data = docSnap.data();
           if (data.avatarUrl) setAvatar(data.avatarUrl);
+          if (typeof data.money === 'number') setMoney(data.money);
         }
       } catch (e) {}
     };
@@ -166,6 +168,7 @@ export default function Profile() {
           </TouchableOpacity>
         </View>
         {/* 使用者ID區塊 */}
+
         <View style={styles.idRow}>
           {editingId ? (
             <TextInput

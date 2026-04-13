@@ -1,10 +1,13 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { useMoney } from './moneyContext';
 
 export default function Pet() {
+  const { money } = useMoney();
   return (
     <View style={styles.container}>
       <Text style={styles.text}>Pet 分頁</Text>
+      <Text style={{ color: '#ffb300', fontWeight: 'bold', fontSize: 20, marginTop: 16 }}>金幣：{money}</Text>
     </View>
   );
 }

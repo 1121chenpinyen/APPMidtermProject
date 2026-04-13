@@ -1,3 +1,22 @@
+// 幫指定 deviceId 加金幣
+async function addMoneyToDevice(deviceId, amount) {
+  if (!deviceId) return;
+  const profileRef = doc(collection(db, 'profiles'), deviceId);
+  const profileSnap = await getDoc(profileRef);
+  if (!profileSnap.exists()) {
+    await setDoc(profileRef, { money: amount }, { merge: true });
+  } else {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(profileRef);
+      let oldMoney = 0;
+      if (snap.exists()) {
+        const data = snap.data();
+        oldMoney = typeof data.money === 'number' ? data.money : 0;
+      }
+      transaction.set(profileRef, { money: oldMoney + amount }, { merge: true });
+    });
+  }
+}
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { getDeviceId } from './getDeviceId';
 import { getUserId } from './getUserId';
@@ -8,9 +27,11 @@ import { StatusBar } from 'expo-status-bar';
 import MessageModal from './MessageModal';
 import FABDialog from './FABDialog';
 
+import { useFocusEffect } from '@react-navigation/native';
+
 // 2. 引入 Firebase 配置
 import { db, storage } from './firebaseConfig';
-import { doc, getDoc, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, where, updateDoc } from 'firebase/firestore';
+import { doc, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, where, updateDoc, setDoc, getDoc, runTransaction } from 'firebase/firestore';
   // 標記回覆為已讀
   const markAsRead = async (replyId) => {
     try {
@@ -25,9 +46,14 @@ import { ref, uploadBytes, getDownloadURL, getStorage } from 'firebase/storage';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CARD_WIDTH = 300; // 定義卡片寬度
 
-import { useFocusEffect } from '@react-navigation/native';
+
+import { useMoney } from './moneyContext';
 
 export default function Home() {
+  const { money, earn } = useMoney();
+  // 每個回覆的愛心收藏狀態（replyId: true/false）
+  const [favoriteMap, setFavoriteMap] = useState({});
+  const [heartLoading, setHeartLoading] = useState(false);
   const [text, setText] = useState('');
   const [dialogVisible, setDialogVisible] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -96,6 +122,7 @@ export default function Home() {
         });
         setText('');
         setDialogVisible(false);
+        earn(10); // 發留言加10金幣
       } catch (error) {
         console.error("傳送失敗:", error);
       }
@@ -147,6 +174,7 @@ export default function Home() {
       // 顯示已回覆(留言者ID)
       setReplySentInfo(`已回覆${selectedMsg.userId || selectedMsg.deviceId || 'Unknown'}的留言`);
       setTimeout(() => setReplySentInfo(null), 2000);
+      earn(5); // 回覆加5金幣
     } catch (e) {
       alert('傳送失敗: ' + e.message);
     }
@@ -164,13 +192,24 @@ export default function Home() {
       for (let i = 0; i < myMsgIds.length; i += batchSize) { batches.push(myMsgIds.slice(i, i + batchSize)); }
       const unsubscribes = [];
       let allReplies = [];
+      let favMap = {};
       batches.forEach((batch) => {
         const qReply = query(collection(db, 'replies'), where('messageId', 'in', batch), orderBy('createdAt', 'desc'));
         const unsub = onSnapshot(qReply, (querySnapshot) => {
           const data = [];
-          querySnapshot.forEach((doc) => { data.push({ ...doc.data(), id: doc.id }); });
+          querySnapshot.forEach((doc) => {
+            const d = { ...doc.data(), id: doc.id };
+            data.push(d);
+            // 收藏紀錄存在 replies 的 likedBy 陣列
+            if (d.likedBy && Array.isArray(d.likedBy) && deviceId) {
+              favMap[d.id] = d.likedBy.includes(deviceId);
+            } else {
+              favMap[d.id] = false;
+            }
+          });
           allReplies = allReplies.filter(r => !batch.includes(r.messageId)).concat(data);
           setReplies([...allReplies].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+          setFavoriteMap(favMap);
         });
         unsubscribes.push(unsub);
       });
@@ -194,6 +233,8 @@ export default function Home() {
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.title}>Firebase 即時留言板</Text>
+      {/* 顯示金幣數量 */}
+      <Text style={{textAlign: 'center', color: '#ffb300', fontWeight: 'bold', fontSize: 18, marginBottom: 8}}>金幣：{money}</Text>
       <FlatList
         data={messages}
         keyExtractor={(item) => item.id}
@@ -341,6 +382,33 @@ export default function Home() {
             ]}>
               <TouchableOpacity onPress={() => setReplyDetailVisible(false)} style={styles.backBtn}>
                 <Text style={styles.backBtnText}>←</Text>
+              </TouchableOpacity>
+              {/* 右上角愛心按鈕 */}
+              <TouchableOpacity
+                style={{ position: 'absolute', right: 15, top: 15, zIndex: 10, opacity: favoriteMap[selectedReply?.id] ? 0.7 : 1 }}
+                disabled={favoriteMap[selectedReply?.id] || heartLoading || !selectedReply}
+                onPress={async () => {
+                  if (favoriteMap[selectedReply?.id] || heartLoading || !selectedReply) return;
+                  setHeartLoading(true);
+                  try {
+                    // 1. 更新 replies 文件 isRewardGiven: true
+                    const replyRef = doc(collection(db, 'replies'), selectedReply.id);
+                    await setDoc(replyRef, { isRewardGiven: true }, { merge: true });
+                    // 2. 從 replies 讀取 fromDeviceId
+                    const replySnap = await getDoc(replyRef);
+                    const replyData = replySnap.exists() ? replySnap.data() : {};
+                    const fromDeviceId = replyData.fromDeviceId;
+                    // 3. 呼叫 addMoneyToDevice
+                    if (fromDeviceId) await addMoneyToDevice(fromDeviceId, 5);
+                  } catch {}
+                  setFavoriteMap(fav => ({ ...fav, [selectedReply.id]: true }));
+                  earn(2); // 主動獎勵
+                  setHeartLoading(false);
+                }}
+              >
+                <Text style={{ fontSize: 26, color: '#e74c3c' }}>
+                  {favoriteMap[selectedReply?.id] ? '♥' : '♡'}
+                </Text>
               </TouchableOpacity>
               <View style={{ marginTop: 20, alignItems: 'center', width: '100%', flex: 1 }}>
                 <ScrollView contentContainerStyle={{ alignItems: 'center', paddingBottom: 20 }} style={{ width: '100%' }}>
