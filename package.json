@@ -1,7 +1,7 @@
 {
   "name": "appmidtermproject",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
@@ -11,13 +11,15 @@
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "@react-navigation/bottom-tabs": "^7.15.9",
-    "@react-navigation/native": "^7.2.2",
+    "@react-navigation/bottom-tabs": "^7.3.10",
+    "@react-navigation/native": "^7.1.6",
     "babel-preset-expo": "~54.0.10",
     "expo": "~54.0.33",
     "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.8",
     "expo-image-picker": "~17.0.10",
+    "expo-linking": "^8.0.11",
+    "expo-router": "~6.0.23",
     "expo-status-bar": "~3.0.9",
     "expo-updates": "~29.0.16",
     "firebase": "^12.11.0",

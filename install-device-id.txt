@@ -1,4 +1,0 @@
-# 安裝取得裝置唯一識別碼的套件
-expo install expo-constants
-# 或（bare RN）
-npm install expo-constants

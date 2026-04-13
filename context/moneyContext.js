@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { db } from './firebaseConfig';
+import { db } from '../config/firebaseConfig';
 import { doc, onSnapshot, setDoc, getDoc, runTransaction } from 'firebase/firestore';
-import { getDeviceId } from './getDeviceId';
+import { getDeviceId } from '../utils/getDeviceId';
 
 const MoneyContext = createContext();
 

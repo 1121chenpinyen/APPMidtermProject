@@ -1,8 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useMoney } from './moneyContext';
+import { useMoney } from '../../context/moneyContext';
 
-export default function Pet() {
+export default function PetPage() {
   const { money } = useMoney();
   return (
     <View style={styles.container}>

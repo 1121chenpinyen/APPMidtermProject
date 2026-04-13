@@ -15,7 +15,7 @@ export default function MessageModal({ visible, onClose, message, onReply }) {
       return;
     }
     let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'], // 修正為最新版字串寫法
+      mediaTypes: ImagePicker.MediaTypeOptions.Images, // 修正為官方建議寫法
       allowsEditing: true,
       aspect: [4, 3],
       quality: 0.7,
@@ -33,7 +33,7 @@ export default function MessageModal({ visible, onClose, message, onReply }) {
       return;
     }
     let result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ['images'], // 修正為最新版字串寫法
+      mediaTypes: ImagePicker.MediaTypeOptions.Images, // 修正為官方建議寫法
       allowsEditing: true,
       aspect: [4, 3],
       quality: 0.7,

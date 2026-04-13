@@ -1,32 +1,27 @@
-
-
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, TextInput, Keyboard, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, TextInput, Keyboard, ActivityIndicator } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { getDeviceId } from './getDeviceId';
+import { getDeviceId } from '../../utils/getDeviceId';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { db, storage } from './firebaseConfig';
+import { db, storage } from '../../config/firebaseConfig';
 import { collection, doc, setDoc, getDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { useMoney } from '../../context/moneyContext';
 
-
-
-export default function Profile() {
+export default function ProfilePage() {
   const [avatar, setAvatar] = useState(null);
   const [userId, setUserId] = useState('');
   const [editingId, setEditingId] = useState(false);
   const [tempId, setTempId] = useState('');
   const [loading, setLoading] = useState(true);
-  const [money, setMoney] = useState(0);
-
-  // 取得裝置唯一識別碼
   const [deviceId, setDeviceId] = useState(null);
+  const { money } = useMoney();
+
   useEffect(() => {
     getDeviceId().then(setDeviceId);
   }, []);
 
-  // 取得頭像URL與金幣
   useEffect(() => {
     if (!deviceId) return;
     const fetchProfile = async () => {
@@ -36,14 +31,12 @@ export default function Profile() {
         if (docSnap.exists()) {
           const data = docSnap.data();
           if (data.avatarUrl) setAvatar(data.avatarUrl);
-          if (typeof data.money === 'number') setMoney(data.money);
         }
       } catch (e) {}
     };
     fetchProfile();
   }, [deviceId]);
 
-  // 進入頁面時，先查 AsyncStorage 有沒有自訂 ID
   useEffect(() => {
     const fetchId = async () => {
       try {
@@ -64,8 +57,6 @@ export default function Profile() {
     fetchId();
   }, [deviceId]);
 
-
-  // 上傳頭像到 Firebase Storage 並存 Firestore
   const uploadAvatar = async (uri) => {
     if (!deviceId) return;
     try {
@@ -75,10 +66,8 @@ export default function Profile() {
       const storageRef = ref(storage, filename);
       await uploadBytes(storageRef, blob);
       const url = await getDownloadURL(storageRef);
-      // 存到 Firestore
       await setDoc(doc(collection(db, 'profiles'), deviceId), { avatarUrl: url, userId: userId || deviceId }, { merge: true });
       setAvatar(url);
-      // 同步存到本地 AsyncStorage，避免切換裝置時混用
       await AsyncStorage.setItem('avatarUrl', url);
       Alert.alert('頭像已更新！');
     } catch (e) {
@@ -86,7 +75,6 @@ export default function Profile() {
     }
   };
 
-  // 選擇或拍照上傳頭像
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
@@ -120,7 +108,6 @@ export default function Profile() {
     }
   };
 
-  // 彈出 Alert 讓用戶選擇來源
   const handleEditAvatar = () => {
     Alert.alert(
       '更換頭像',
@@ -133,7 +120,6 @@ export default function Profile() {
     );
   };
 
-  // 儲存自訂 ID 到 AsyncStorage
   const saveId = async (newId) => {
     setUserId(newId);
     setEditingId(false);
@@ -160,15 +146,13 @@ export default function Profile() {
       <View style={styles.sheet}>
         <View style={styles.avatarContainer}>
           <Image
-            source={avatar ? { uri: avatar } : require('./assets/avatar-placeholder.png')}
+            source={avatar ? { uri: avatar } : require('../../assets/avatar-placeholder.png')}
             style={styles.avatar}
           />
           <TouchableOpacity style={styles.editBtn} onPress={handleEditAvatar}>
             <MaterialIcons name="edit" size={22} color="#333" />
           </TouchableOpacity>
         </View>
-        {/* 使用者ID區塊 */}
-
         <View style={styles.idRow}>
           {editingId ? (
             <TextInput
@@ -190,7 +174,6 @@ export default function Profile() {
             <MaterialIcons name="edit" size={20} color="#333" />
           </TouchableOpacity>
         </View>
-        {/* 這裡可加更多 Profile 內容 */}
       </View>
     </View>
   );
@@ -199,7 +182,7 @@ export default function Profile() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#d6ecf7', // 淺藍色
+    backgroundColor: '#d6ecf7',
   },
   header: {
     height: 120,
@@ -241,7 +224,7 @@ const styles = StyleSheet.create({
   idRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 36, // 往上移動
+    marginTop: 36,
     marginBottom: 16,
     justifyContent: 'center',
     width: '80%',
@@ -279,3 +262,5 @@ const styles = StyleSheet.create({
     transform: [{ translateY: -14 }],
   },
 });
+
+// Expo Router 頁面元件名稱需為 ProfilePage

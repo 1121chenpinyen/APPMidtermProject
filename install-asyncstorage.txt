@@ -1,2 +1,0 @@
-請執行以下指令安裝 AsyncStorage：
-npx expo install @react-native-async-storage/async-storage
