@@ -16,7 +16,7 @@ import MessageModal from '../../components/MessageModal';
 import FABDialog from '../../components/FABDialog';
 import { db, storage } from '../../config/firebaseConfig';
 import { useMoney } from '../../context/moneyContext';
-import { doc, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, where, updateDoc, setDoc, getDoc, runTransaction } from 'firebase/firestore';
+import { doc, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, where, updateDoc, setDoc, getDoc, runTransaction, getDocs } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, getStorage } from 'firebase/storage';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -45,6 +45,7 @@ async function addMoneyToDevice(deviceId, amount) {
 export default function HomePage() {
   // 監聽自己收到的回覆，若有 showHeartToast 則顯示提示
   useEffect(() => {
+    console.log('[debug] useEffect deviceId:', deviceId);
     if (!deviceId) return;
     let timeoutId = null;
     const q = query(
@@ -53,12 +54,24 @@ export default function HomePage() {
       where('showHeartToast', '==', true)
     );
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      console.log('[debug] onSnapshot replies triggered, size:', querySnapshot.size);
       querySnapshot.forEach(async (docSnap) => {
-        setReplySentInfo('收到愛心 獲得5枚回音幣');
-        if (timeoutId) clearTimeout(timeoutId);
-        timeoutId = setTimeout(() => setReplySentInfo(null), 2000);
+        const data = docSnap.data();
+        console.log('[debug] docSnap.id:', docSnap.id, 'data:', data);
+        // 先更新金幣數量
+        if (typeof earn === 'function') {
+          earn(0); // 觸發金幣 context 更新（如果有必要，可改成 earn(0) 或直接觸發刷新）
+        }
+        // 再顯示提示
+        setTimeout(() => {
+          setReplySentInfo('收到愛心 獲得5枚回音幣');
+          console.log('[debug] setReplySentInfo 後');
+          if (timeoutId) clearTimeout(timeoutId);
+          timeoutId = setTimeout(() => setReplySentInfo(null), 2000);
+        }, 200); // 稍微延遲，確保金幣 UI 先刷新
         // 清除 showHeartToast 標記，避免重複彈出
         await setDoc(doc(collection(db, 'replies'), docSnap.id), { showHeartToast: false }, { merge: true });
+        console.log('[debug] 已清除 showHeartToast:', docSnap.id);
       });
     });
     return () => {
@@ -79,6 +92,7 @@ export default function HomePage() {
   const [deviceId, setDeviceId] = useState(null);
   const [replies, setReplies] = useState([]);
   const [selectedReply, setSelectedReply] = useState(null);
+  const [originalMessage, setOriginalMessage] = useState(null);
   const [replyDetailVisible, setReplyDetailVisible] = useState(false);
   const slideAnim = useRef(new Animated.Value(CARD_WIDTH)).current;
   const shakeAnims = useRef({});
@@ -111,7 +125,7 @@ export default function HomePage() {
     return () => unsubscribe();
   }, [fetchAvatars]);
   useEffect(() => {
-    const q = query(collection(db, 'chat'), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'chat'), where('isReplied', '==', false), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const data = [];
       querySnapshot.forEach((doc) => { data.push({ ...doc.data(), id: doc.id }); });
@@ -175,6 +189,7 @@ export default function HomePage() {
           createdAt: serverTimestamp(),
           deviceId: deviceId,
           userId: userId,
+          isReplied: false,
         });
         setText('');
         setDialogVisible(false);
@@ -224,6 +239,9 @@ export default function HomePage() {
         createdAt: serverTimestamp(),
         isRead: false,
       });
+      // 標記 chat 為已被回覆
+      const chatRef = doc(collection(db, 'chat'), selectedMsg.id);
+      await setDoc(chatRef, { isReplied: true }, { merge: true });
       setMsgModalVisible(false);
       setSelectedMsg(null);
       setReplySentInfo(`已回覆 獲得5枚回音幣`);
@@ -418,6 +436,18 @@ export default function HomePage() {
                       onPress={async () => {
                         setSelectedReply(item);
                         setReplyDetailVisible(true);
+                        // 取得原留言內容
+                        if (item.messageId) {
+                          const msgRef = doc(collection(db, 'chat'), item.messageId);
+                          const msgSnap = await getDoc(msgRef);
+                          if (msgSnap.exists()) {
+                            setOriginalMessage(msgSnap.data().content || '');
+                          } else {
+                            setOriginalMessage('（原留言已刪除）');
+                          }
+                        } else {
+                          setOriginalMessage('');
+                        }
                         if (!item.isRead) await markAsRead(item.id);
                       }}
                     >
@@ -452,11 +482,18 @@ export default function HomePage() {
                   setHeartLoading(true);
                   try {
                     const replyRef = doc(collection(db, 'replies'), selectedReply.id);
-                    await setDoc(replyRef, { isRewardGiven: true, showHeartToast: true }, { merge: true });
+                    // 1. 先取得原本的 likedBy
                     const replySnap = await getDoc(replyRef);
-                    const replyData = replySnap.exists() ? replySnap.data() : {};
-                    const fromDeviceId = replyData.fromDeviceId;
-                    if (fromDeviceId) await addMoneyToDevice(fromDeviceId, 5);
+                    let likedBy = [];
+                    if (replySnap.exists()) {
+                      const replyData = replySnap.data();
+                      likedBy = Array.isArray(replyData.likedBy) ? replyData.likedBy : [];
+                      const fromDeviceId = replyData.fromDeviceId;
+                      if (fromDeviceId) await addMoneyToDevice(fromDeviceId, 5);
+                    }
+                    // 2. 把 deviceId 加入 likedBy
+                    if (!likedBy.includes(deviceId)) likedBy.push(deviceId);
+                    await setDoc(replyRef, { isRewardGiven: true, showHeartToast: true, likedBy }, { merge: true });
                   } catch {}
                   setFavoriteMap(fav => ({ ...fav, [selectedReply.id]: true }));
                   setReplySentInfo('發送愛心 獲得2枚回音幣');
@@ -475,7 +512,7 @@ export default function HomePage() {
                   <Text style={styles.detailLabel}>回覆來自：</Text>
                   <Text style={styles.detailText}>{selectedReply?.fromUserId || '匿名'}</Text>
                   <Text style={styles.detailLabel}>原留言：</Text>
-                  <Text style={styles.detailText}>{messages.find(m => m.id === selectedReply?.messageId)?.content || '...'}</Text>
+                  <Text style={styles.detailText}>{originalMessage ?? '...'}</Text>
                   <Text style={styles.detailLabel}>回覆內容：</Text>
                   <Text style={styles.detailText}>{selectedReply?.replyText}</Text>
                   {selectedReply?.imageUri && <Image source={{ uri: selectedReply.imageUri }} style={styles.detailImage} />}

@@ -126,6 +126,10 @@ export default function ProfilePage() {
     setTempId(newId);
     try {
       await AsyncStorage.setItem('userId', newId);
+      // 寫入 Firebase profiles
+      if (deviceId && newId) {
+        await setDoc(doc(collection(db, 'profiles'), deviceId), { userId: newId }, { merge: true });
+      }
     } catch (e) {
       Alert.alert('儲存失敗', '請檢查裝置儲存空間');
     }
