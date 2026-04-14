@@ -366,7 +366,16 @@ export default function HomePage() {
 
   // --- 計算屬性 ---
   const hasUnreadReplies = replies.some(r => r.isRead === false);
+  
 
+  if (!deviceId) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fffae0' }}>
+        <Text style={{ color: '#a29add', fontWeight: 'bold' }}>正在與廣場連線中...</Text>
+        <Text style={{ fontSize: 12, color: '#ccc', marginTop: 10 }}>等待裝置 ID 初始化</Text>
+      </View>
+    );
+  }
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.title}>悠悠廣場</Text>
