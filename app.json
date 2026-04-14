@@ -23,9 +23,7 @@
       "edgeToEdgeEnabled": true,
       "package": "com.portia1121.APPMidtermProject"
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
+    
     "extra": {
       "eas": {
         "projectId": "097082aa-b8c5-4a28-af71-cce0c2f0788d"
