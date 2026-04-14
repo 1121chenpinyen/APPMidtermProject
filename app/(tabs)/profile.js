@@ -1,13 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, TextInput, Keyboard, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect ,useCallback} from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, TextInput, Keyboard, ActivityIndicator, ScrollView, Dimensions } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { getDeviceId } from '../../utils/getDeviceId';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { db, storage } from '../../config/firebaseConfig';
-import { collection, doc, setDoc, getDoc } from 'firebase/firestore';
+import { collection, doc, setDoc, getDoc, query, where, getDocs } from 'firebase/firestore'; 
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { useMoney } from '../../context/moneyContext';
+
+const { width } = Dimensions.get('window');
 
 export default function ProfilePage() {
   const [avatar, setAvatar] = useState(null);
@@ -16,46 +18,86 @@ export default function ProfilePage() {
   const [tempId, setTempId] = useState('');
   const [loading, setLoading] = useState(true);
   const [deviceId, setDeviceId] = useState(null);
-  const { money } = useMoney();
+
+  // 數據統計狀態
+  const [stats, setStats] = useState({
+    sentMessages: 20,    // 我的小煩惱 (chat count)
+    receivedHearts: 10,  // 收到的愛心 (total likes on my replies)
+    sentReplies: 0,     // 給出的回覆 (replies I sent)
+    receivedReplies: 20  // 收到的回覆 (replies to my messages)
+  });
 
   useEffect(() => {
     getDeviceId().then(setDeviceId);
   }, []);
 
-  useEffect(() => {
+  // 抓取統計數據邏輯 (符合 index 命名)
+  const fetchUserStats = async (id) => {
+    try {
+      // 1. 我的小煩惱 (chat 集合中 deviceId 是我的)
+      const qMsg = query(collection(db, 'chat'), where('deviceId', '==', id));
+      const snapMsg = await getDocs(qMsg);
+
+      // 2. 給出的回覆 (replies 集合中 fromDeviceId 是我的)
+      const qMyReplies = query(collection(db, 'replies'), where('fromDeviceId', '==', id));
+      const snapMyReplies = await getDocs(qMyReplies);
+
+      // 3. 收到的回覆 (replies 集合中 toDeviceId 是我的)
+      const qReceivedReplies = query(collection(db, 'replies'), where('toDeviceId', '==', id));
+      const snapReceivedReplies = await getDocs(qReceivedReplies);
+
+      // 4. 收到的愛心 (計算自己發出的 reply 獲得的 likedBy 總數)
+      let totalHearts = 0;
+      snapMyReplies.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data.likedBy && Array.isArray(data.likedBy)) {
+          totalHearts += data.likedBy.length;
+        }
+      });
+
+      setStats({
+        sentMessages: snapMsg.size,
+        receivedHearts: totalHearts,
+        sentReplies: snapMyReplies.size,
+        receivedReplies: snapReceivedReplies.size
+      });
+    } catch (e) {
+      console.error('[Profile] Stats error:', e);
+    }
+  };
+
+  useFocusEffect(
+  useCallback(() => {
     if (!deviceId) return;
-    const fetchProfile = async () => {
+
+    const updateData = async () => {
       try {
         const docRef = doc(collection(db, 'profiles'), deviceId);
         const docSnap = await getDoc(docRef);
+        
         if (docSnap.exists()) {
           const data = docSnap.data();
           if (data.avatarUrl) setAvatar(data.avatarUrl);
+          
+          const localId = await AsyncStorage.getItem('userId');
+          const finalId = data.userId || localId || deviceId;
+          setUserId(finalId);
+          setTempId(finalId);
         }
-      } catch (e) {}
-    };
-    fetchProfile();
-  }, [deviceId]);
 
-  useEffect(() => {
-    const fetchId = async () => {
-      try {
-        const localId = await AsyncStorage.getItem('userId');
-        if (localId && localId.trim().length > 0) {
-          setUserId(localId);
-          setTempId(localId);
-        } else {
-          setUserId(deviceId);
-          setTempId(deviceId);
-        }
+        // 每次切換回來都會跑這行，確保數據更新
+        await fetchUserStats(deviceId);
+        
       } catch (e) {
-        setUserId(deviceId);
-        setTempId(deviceId);
+        console.error("刷新資料失敗:", e);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
-    fetchId();
-  }, [deviceId]);
+
+    updateData();
+  }, [deviceId])
+);
 
   const uploadAvatar = async (uri) => {
     if (!deviceId) return;
@@ -66,205 +108,175 @@ export default function ProfilePage() {
       const storageRef = ref(storage, filename);
       await uploadBytes(storageRef, blob);
       const url = await getDownloadURL(storageRef);
-      await setDoc(doc(collection(db, 'profiles'), deviceId), { avatarUrl: url, userId: userId || deviceId }, { merge: true });
+      await setDoc(doc(collection(db, 'profiles'), deviceId), { avatarUrl: url }, { merge: true });
       setAvatar(url);
-      await AsyncStorage.setItem('avatarUrl', url);
-      Alert.alert('頭像已更新！');
+      Alert.alert('更新成功');
     } catch (e) {
-      Alert.alert('頭像上傳失敗', e.message);
-    }
-  };
-
-  const pickImage = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('權限不足', '請允許存取相簿權限');
-      return;
-    }
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 1,
-    });
-    if (!result.canceled) {
-      uploadAvatar(result.assets[0].uri);
-    }
-  };
-
-  const takePhoto = async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('權限不足', '請允許相機權限');
-      return;
-    }
-    let result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 1,
-    });
-    if (!result.canceled) {
-      uploadAvatar(result.assets[0].uri);
+      Alert.alert('上傳失敗');
     }
   };
 
   const handleEditAvatar = () => {
-    Alert.alert(
-      '更換頭像',
-      '請選擇來源',
-      [
-        { text: '從相簿選擇', onPress: pickImage },
-        { text: '拍照', onPress: takePhoto },
-        { text: '取消', style: 'cancel' },
-      ]
-    );
+    Alert.alert('更換頭像', '選擇照片來源', [
+      { text: '相簿', onPress: async () => {
+          let result = await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [1, 1], quality: 0.5 });
+          if (!result.canceled) uploadAvatar(result.assets[0].uri);
+      }},
+      { text: '取消', style: 'cancel' }
+    ]);
   };
 
   const saveId = async (newId) => {
+    if (newId.trim().length === 0) return;
     setUserId(newId);
     setEditingId(false);
-    setTempId(newId);
     try {
       await AsyncStorage.setItem('userId', newId);
-      // 寫入 Firebase profiles
-      if (deviceId && newId) {
+      if (deviceId) {
         await setDoc(doc(collection(db, 'profiles'), deviceId), { userId: newId }, { merge: true });
       }
-    } catch (e) {
-      Alert.alert('儲存失敗', '請檢查裝置儲存空間');
-    }
+    } catch (e) { console.log(e); }
     Keyboard.dismiss();
   };
 
-  if (loading) {
-    return (
-      <View style={[styles.root, { justifyContent: 'center', alignItems: 'center' }]}> 
-        <ActivityIndicator size="large" color="#888" />
-      </View>
-    );
-  }
+  if (loading) return <View style={styles.loading}><ActivityIndicator size="large" color="#4630EB" /></View>;
 
   return (
-    <View style={styles.root}>
-      <View style={styles.header} />
-      <View style={styles.sheet}>
-        <View style={styles.avatarContainer}>
-          <Image
-            source={avatar ? { uri: avatar } : require('../../assets/avatar-placeholder.png')}
-            style={styles.avatar}
+    <ScrollView style={styles.container} contentContainerStyle={{ flexGrow: 1 }}>
+      <View style={styles.topSection} />
+      
+      <View style={styles.contentCard}>
+        {/* 頭像區域 */}
+        <View style={styles.avatarWrapper}>
+          <Image 
+            source={avatar ? { uri: avatar } : require('../../assets/avatar-placeholder.png')} 
+            style={styles.avatarImage} 
           />
-          <TouchableOpacity style={styles.editBtn} onPress={handleEditAvatar}>
-            <MaterialIcons name="edit" size={22} color="#333" />
+          <TouchableOpacity style={styles.avatarEditIcon} onPress={handleEditAvatar}>
+            <MaterialIcons name="edit" size={14} color="#666" />
           </TouchableOpacity>
         </View>
-        <View style={styles.idRow}>
-          {editingId ? (
-            <TextInput
-              style={styles.idInput}
-              value={tempId}
-              onChangeText={setTempId}
-              autoFocus
-              onSubmitEditing={() => saveId(tempId)}
-              onBlur={() => saveId(tempId)}
-              maxLength={20}
-            />
-          ) : (
-            <Text style={styles.userId}>{userId}</Text>
-          )}
-          <TouchableOpacity style={styles.editBtnSmall} onPress={() => {
-            setTempId(userId);
-            setEditingId(true);
-          }}>
-            <MaterialIcons name="edit" size={20} color="#333" />
+
+        {/* 使用者名稱區域 - 完美置中配置 */}
+        <View style={styles.nameRow}>
+          {/* 左側佔位塊：寬度與右側按鈕一致，確保中間文字置中 */}
+          <View style={{ width: 40 }} /> 
+
+          <View style={styles.centerNameArea}>
+            {editingId ? (
+              <TextInput
+                style={styles.nameInput}
+                value={tempId}
+                onChangeText={setTempId}
+                onBlur={() => saveId(tempId)}
+                autoFocus
+              />
+            ) : (
+              <Text style={styles.nameText}>{userId}</Text>
+            )}
+          </View>
+
+          {/* 右側編輯按鈕：固定寬度 */}
+          <TouchableOpacity style={styles.editButton} onPress={() => setEditingId(true)}>
+            <MaterialIcons name="edit" size={18} color="#999" />
           </TouchableOpacity>
+        </View>
+
+        {/* 數據卡片 1：小煩惱 & 愛心 */}
+        <View style={styles.statBox}>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>我的小煩惱</Text>
+            <Text style={styles.statValue}>{stats.sentMessages}</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>收到的愛心</Text>
+            <Text style={styles.statValue}>{stats.receivedHearts}</Text>
+          </View>
+        </View>
+
+        {/* 數據卡片 2：給出回覆 & 收到回覆 */}
+        <View style={styles.statBox}>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>給出的回覆</Text>
+            <Text style={styles.statValue}>{stats.sentReplies}</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>收到的回覆</Text>
+            <Text style={styles.statValue}>{stats.receivedReplies}</Text>
+          </View>
         </View>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
+  container: { flex: 1, backgroundColor: '#fdf9e1' }, 
+  loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  topSection: { height: 200 },
+  contentCard: {
     flex: 1,
-    backgroundColor: '#d6ecf7',
-  },
-  header: {
-    height: 120,
-    backgroundColor: '#d6ecf7',
-  },
-  sheet: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    marginTop: -40,
+    backgroundColor: '#e6e6e6', 
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
     alignItems: 'center',
-    paddingTop: 60,
-  },
-  avatarContainer: {
-    position: 'absolute',
-    top: -60,
-    alignSelf: 'center',
-  },
-  avatar: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    borderWidth: 4,
-    borderColor: '#fff',
-    backgroundColor: '#eee',
-  },
-  editBtn: {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 4,
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: '#eee',
-  },
-  idRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 36,
-    marginBottom: 16,
-    justifyContent: 'center',
-    width: '80%',
-    alignSelf: 'center',
-    position: 'relative',
-  },
-  userId: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    flex: 1,
-    textAlign: 'center',
-  },
-  idInput: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    borderBottomWidth: 1,
-    borderColor: '#aaa',
-    flex: 1,
-    textAlign: 'center',
-    minWidth: 120,
-    paddingVertical: 2,
-  },
-  editBtnSmall: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 2,
-    borderWidth: 1,
-    borderColor: '#eee',
-    marginLeft: 8,
-    position: 'absolute',
-    right: 0,
-    top: '50%',
-    transform: [{ translateY: -14 }],
-  },
-});
+    paddingTop: 80,
+    paddingHorizontal: 25,
+    // Android 專用
+  elevation: 10,                
 
-// Expo Router 頁面元件名稱需為 ProfilePage
+  // iOS 專用
+  shadowColor: '#000',
+  shadowOffset: {
+    width: 0,                   // 設為 0 讓陰影不左右偏移
+    height: 0,                  // 設為 0 讓陰影不上下偏移
+  },
+  shadowOpacity: 0.2,           // 陰影透明度
+  shadowRadius: 10,
+  },
+  avatarWrapper: {
+    position: 'absolute',
+    top: -55,
+    backgroundColor: '#fff',
+    borderRadius: 60,
+    padding: 3,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+  },
+  avatarImage: { width: 110, height: 110, borderRadius: 55 },
+  avatarEditIcon: {
+    position: 'absolute',
+    right: 5,
+    bottom: 5,
+    backgroundColor: '#eee',
+    borderRadius: 10,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: '#ccc'
+    
+  },
+  nameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%',marginBottom: 45 },
+  centerNameArea: {flex: 1, alignItems: 'center'},
+  nameText: { fontSize: 20, fontWeight: 'bold', color: '#333' },
+  nameInput: { fontSize: 20, fontWeight: 'bold', color: '#333', borderBottomWidth: 1, width: 100, textAlign: 'center' },
+  editButton: {width: 40, alignItems: 'center', justifyContent: 'center'},
+
+  statBox: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    width: '100%',
+    borderRadius: 20,
+    paddingVertical: 20,
+    marginBottom: 15,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  statItem: { flex: 1, paddingLeft: 25 },
+  statLabel: { fontSize: 14, color: '#333', fontWeight: 'bold', marginBottom: 10 },
+  statValue: { fontSize: 32, color: '#d1a07a', fontWeight: '300' },
+});
