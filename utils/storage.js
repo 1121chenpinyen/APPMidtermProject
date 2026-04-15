@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import petsData from '../data/pets.json';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db } from '../config/firebaseConfig';
 
 // 初始化全局數據（食物計數、玩具列表、金錢）
 export const initGlobalData = async () => {
@@ -58,4 +60,27 @@ export const updatePet = async (petId, newData) => {
     pets[index] = { ...pets[index], ...newData };
     await AsyncStorage.setItem('pets', JSON.stringify(pets));
   }
+};
+// 💡 核心：將 Firebase 的錢同步到本地 AsyncStorage
+export const syncMoneyFromFirebase = async (deviceId) => {
+  if (!deviceId) return;
+  try {
+    const profileRef = doc(db, 'profiles', deviceId);
+    const profileSnap = await getDoc(profileRef);
+    
+    if (profileSnap.exists()) {
+      const firebaseMoney = profileSnap.data().money || 0;
+      // 同步到本地 AsyncStorage
+      await updateGlobalData({ money: firebaseMoney });
+      return firebaseMoney;
+    }
+  } catch (e) {
+    console.error("同步 Firebase 金錢失敗:", e);
+  }
+};
+// 重置所有數據（用於測試）
+export const resetAllData = async () => {
+  await AsyncStorage.clear();
+  await initPets();
+  await initGlobalData();
 };

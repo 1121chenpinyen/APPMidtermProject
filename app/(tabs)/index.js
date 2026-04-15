@@ -40,6 +40,12 @@ async function addMoneyToDevice(deviceId, amount) {
       transaction.set(profileRef, { money: oldMoney + amount }, { merge: true });
     });
   }
+  const newSnap = await getDoc(profileRef);
+  if (newSnap.exists()) {
+    const latestMoney = newSnap.data().money;
+    // 💡 同步到 Pet 頁面用的 AsyncStorage
+    await updateGlobalData({ money: latestMoney }); 
+  }
 }
 
 export default function HomePage() {

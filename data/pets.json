@@ -10,7 +10,7 @@
   {
     "id": 2,
     "name": "小貓貓",
-    "type": "cat_1",
+    "type": "cat",
     "hunger": 50,
     "happiness": 50,
     "image": "./assets/pets/cat.png"
