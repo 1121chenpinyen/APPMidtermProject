@@ -3,7 +3,12 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 export default function TabLayout() {
   return (
-    <Tabs>
+    <Tabs
+      screenOptions={{
+        headerShown: false, // <--- 加入這一行，就會隱藏最上面的 Home 區塊
+        tabBarActiveTintColor: '#a29add',
+      }}
+    >
       <Tabs.Screen
         name="index"
         options={{

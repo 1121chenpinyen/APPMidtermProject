@@ -40,45 +40,68 @@ async function addMoneyToDevice(deviceId, amount) {
       transaction.set(profileRef, { money: oldMoney + amount }, { merge: true });
     });
   }
+  const newSnap = await getDoc(profileRef);
+  if (newSnap.exists()) {
+    const latestMoney = newSnap.data().money;
+    // 💡 同步到 Pet 頁面用的 AsyncStorage
+    await updateGlobalData({ money: latestMoney }); 
+  }
 }
 
 export default function HomePage() {
   // 監聽自己收到的回覆，若有 showHeartToast 則顯示提示
+  // 監聽自己收到的愛心提示
+  // 監聽自己收到的愛心提示
   useEffect(() => {
-    console.log('[debug] useEffect deviceId:', deviceId);
-    if (!deviceId) return;
-    let timeoutId = null;
+    // 關鍵：確保 deviceId 已經取得，且不是 null
+    if (!deviceId) {
+      console.log("等待 deviceId...");
+      return;
+    }
+
+    console.log("開始監聽愛心提示，我的 ID:", deviceId);
+
     const q = query(
       collection(db, 'replies'),
       where('fromDeviceId', '==', deviceId),
       where('showHeartToast', '==', true)
     );
+
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      console.log('[debug] onSnapshot replies triggered, size:', querySnapshot.size);
+      // 如果沒有變動就跳過
+      if (querySnapshot.empty) return;
+
       querySnapshot.forEach(async (docSnap) => {
-        const data = docSnap.data();
-        console.log('[debug] docSnap.id:', docSnap.id, 'data:', data);
-        // 先更新金幣數量
+        const replyId = docSnap.id;
+        console.log("偵測到新的愛心！回覆 ID:", replyId);
+
+        // 1. 顯示 UI 提示 (立即顯示)
+        setReplySentInfo('收到愛心 獲得5枚回音幣');
+        Vibration.vibrate(100); // 實機測試時增加震動感
+
+        // 2. 更新金幣 (Context)
         if (typeof earn === 'function') {
-          earn(0); // 觸發金幣 context 更新（如果有必要，可改成 earn(0) 或直接觸發刷新）
+          earn(0); // 觸發畫面金幣重新抓取
         }
-        // 再顯示提示
-        setTimeout(() => {
-          setReplySentInfo('收到愛心 獲得5枚回音幣');
-          console.log('[debug] setReplySentInfo 後');
-          if (timeoutId) clearTimeout(timeoutId);
-          timeoutId = setTimeout(() => setReplySentInfo(null), 2000);
-        }, 200); // 稍微延遲，確保金幣 UI 先刷新
-        // 清除 showHeartToast 標記，避免重複彈出
-        await setDoc(doc(collection(db, 'replies'), docSnap.id), { showHeartToast: false }, { merge: true });
-        console.log('[debug] 已清除 showHeartToast:', docSnap.id);
+
+        // 3. 重要：立即將資料庫標記改為 false，防止重複觸發
+        // 不要在這裡用 setTimeout，直接更新！
+        try {
+          const replyRef = doc(db, 'replies', replyId);
+          await updateDoc(replyRef, { showHeartToast: false });
+        } catch (e) {
+          console.error("更新 showHeartToast 失敗:", e);
+        }
+
+        // 3秒後自動關閉 Toast
+        setTimeout(() => setReplySentInfo(null), 3000);
       });
+    }, (error) => {
+      console.error("愛心監聽器發生錯誤:", error);
     });
-    return () => {
-      unsubscribe();
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, [deviceId]);
+
+    return () => unsubscribe();
+  }, [deviceId]); // 只有當 deviceId 改變時重新掛載
   const router = useRouter();
   const { money, earn } = useMoney();
   const [favoriteMap, setFavoriteMap] = useState({});
@@ -178,7 +201,34 @@ export default function HomePage() {
       useNativeDriver: true,
     }).start();
   }, [replyDetailVisible]);
+  // 1. 新增狀態
+  const [myAvatarUrl, setMyAvatarUrl] = useState(null);
+  const [selectedReplyAvatarUrl, setSelectedReplyAvatarUrl] = useState(null);
 
+  // 2. 監聽「自己」的頭貼
+  useEffect(() => {
+    if (!deviceId) return;
+    const unsub = onSnapshot(doc(db, 'profiles', deviceId), (doc) => {
+      if (doc.exists()) setMyAvatarUrl(doc.data().avatarUrl);
+    });
+    return () => unsub();
+  }, [deviceId]);
+
+  // 3. 當選中某則回覆時，去抓對方的頭貼
+  useEffect(() => {
+    if (selectedReply?.fromDeviceId) {
+      const fetchOtherAvatar = async () => {
+        const docRef = doc(db, 'profiles', selectedReply.fromDeviceId);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setSelectedReplyAvatarUrl(docSnap.data().avatarUrl);
+        } else {
+          setSelectedReplyAvatarUrl(null);
+        }
+      };
+      fetchOtherAvatar();
+    }
+  }, [selectedReply]);
 
   const handleSend = async () => {
     if (text.trim().length > 0) {
@@ -322,11 +372,20 @@ export default function HomePage() {
 
   // --- 計算屬性 ---
   const hasUnreadReplies = replies.some(r => r.isRead === false);
+  
 
+  if (!deviceId) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fffae0' }}>
+        <Text style={{ color: '#a29add', fontWeight: 'bold' }}>正在與廣場連線中...</Text>
+        <Text style={{ fontSize: 12, color: '#ccc', marginTop: 10 }}>等待裝置 ID 初始化</Text>
+      </View>
+    );
+  }
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>Firebase 即時留言板</Text>
-      <Text style={{textAlign: 'center', color: '#ffb300', fontWeight: 'bold', fontSize: 18, marginBottom: 8}}>金幣：{money}</Text>
+      <Text style={styles.title}>悠悠廣場</Text>
+      <Text style={{textAlign: 'center', color: '#ffb300', fontWeight: 'bold', fontSize: 18, marginBottom: 8}}>回音幣：{money}</Text>
       <FlatList
         data={messages}
         keyExtractor={(item) => item.id}
@@ -402,7 +461,7 @@ export default function HomePage() {
         }}
       />
       {replySentInfo && (
-        <View style={{ position: 'absolute', top: 80, alignSelf: 'center', backgroundColor: '#4630EB', padding: 12, borderRadius: 20, zIndex: 100 }}>
+        <View style={{ position: 'absolute', top: 80, alignSelf: 'center', backgroundColor: '#f8bfbf', padding: 12, borderRadius: 20, zIndex: 100 }}>
           <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>{replySentInfo}</Text>
         </View>
       )}
@@ -422,7 +481,7 @@ export default function HomePage() {
       <Modal visible={envelopeVisible} transparent animationType="fade" onRequestClose={() => setEnvelopeVisible(false)}>
         <View style={styles.overlay}>
           <View style={[styles.envelopeDialog, { overflow: 'hidden', height: 400 }]}>            
-            <Text style={styles.envelopeTitle}>收到的留言回覆</Text>
+            <Text style={styles.envelopeTitle}>落下的回音</Text>
             <View style={{ height: 250, width: '100%' }}>
               <FlatList
                 data={replies}
@@ -503,19 +562,44 @@ export default function HomePage() {
                 }}
 
               >
-                <Text style={{ fontSize: 26, color: '#e74c3c' }}>
+                <Text style={{ fontSize: 26, color: '#e78d82' }}>
                   {favoriteMap[selectedReply?.id] ? '♥' : '♡'}
                 </Text>
               </TouchableOpacity>
-              <View style={{ marginTop: 20, alignItems: 'center', width: '100%', flex: 1 }}>
-                <ScrollView contentContainerStyle={{ alignItems: 'center', paddingBottom: 20 }} style={{ width: '100%' }}>
-                  <Text style={styles.detailLabel}>回覆來自：</Text>
-                  <Text style={styles.detailText}>{selectedReply?.fromUserId || '匿名'}</Text>
-                  <Text style={styles.detailLabel}>原留言：</Text>
-                  <Text style={styles.detailText}>{originalMessage ?? '...'}</Text>
-                  <Text style={styles.detailLabel}>回覆內容：</Text>
-                  <Text style={styles.detailText}>{selectedReply?.replyText}</Text>
-                  {selectedReply?.imageUri && <Image source={{ uri: selectedReply.imageUri }} style={styles.detailImage} />}
+              <View style={{ marginTop: 25, alignItems: 'center', width: '100%', flex: 1 }}>
+                <ScrollView contentContainerStyle={{ paddingHorizontal: 10, paddingBottom: 20 }} style={{ width: '100%' }}>
+                  
+                  {/* 你的煩惱部分 */}
+                  <Text style={styles.detailLabel}>你的煩惱：</Text>
+                  <View style={styles.infoRow}>
+                    <Image 
+                      source={myAvatarUrl ? { uri: myAvatarUrl } : require('../../assets/avatar-placeholder.png')} 
+                      style={styles.miniAvatar} 
+                    />
+                    <View style={styles.infoContent}>
+                      <Text style={styles.infoId}>You</Text>
+                      <Text style={styles.infoText}>{originalMessage ?? '...'}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  {/* 收到的回覆部分 */}
+                  <Text style={styles.detailLabel}>收到的回音：</Text>
+                  <View style={styles.infoRow}>
+                    <Image 
+                      source={selectedReplyAvatarUrl ? { uri: selectedReplyAvatarUrl } : require('../../assets/avatar-placeholder.png')} 
+                      style={styles.miniAvatar} 
+                    />
+                    <View style={styles.infoContent}>
+                      <Text style={styles.infoId}>{selectedReply?.fromUserId || '匿名'}</Text>
+                      <Text style={styles.infoText}>{selectedReply?.replyText}</Text>
+                      {selectedReply?.imageUri && (
+                        <Image source={{ uri: selectedReply.imageUri }} style={styles.detailImage} />
+                      )}
+                    </View>
+                  </View>
+
                 </ScrollView>
               </View>
             </Animated.View>
@@ -529,14 +613,30 @@ export default function HomePage() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5', paddingHorizontal: 20 },
+  container: { flex: 1, backgroundColor: '#fffae0', paddingHorizontal: 20 },
   title: { fontSize: 22, fontWeight: 'bold', marginVertical: 20, textAlign: 'center', color: '#333' },
-  msgBox: { backgroundColor: '#fff', padding: 15, borderRadius: 10, marginBottom: 10, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, borderLeftWidth: 4, borderLeftColor: '#4630EB' },
+  
+  // 廣場上的留言框
+  msgBox: { 
+    backgroundColor: '#fff', 
+    padding: 15, 
+    borderRadius: 10, 
+    marginBottom: 10, 
+    elevation: 2, 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 1 }, 
+    shadowOpacity: 0.1, 
+    borderLeftWidth: 4, 
+    borderLeftColor: '#a29add', 
+    marginHorizontal: 5,
+  },
   msgText: { fontSize: 16, color: '#444' },
+
+  // 右下角按鈕群
   fabContainer: { position: 'absolute', right: 24, bottom: 36, alignItems: 'center' },
-  fab: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#4630EB', justifyContent: 'center', alignItems: 'center', elevation: 5 },
+  fab: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#a29add', justifyContent: 'center', alignItems: 'center', elevation: 5 },
   fabIcon: { color: '#fff', fontSize: 36, fontWeight: 'bold' },
-  envelopeFab: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#ffb300', justifyContent: 'center', alignItems: 'center', marginBottom: 16, elevation: 5, position: 'relative' },
+  envelopeFab: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#f8bfbf', justifyContent: 'center', alignItems: 'center', marginBottom: 16, elevation: 5, position: 'relative' },
   redDot: {
     position: 'absolute',
     top: 0,
@@ -548,13 +648,19 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   envelopeIcon: { fontSize: 30 },
+
+  // 彈窗背景與外框
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
   envelopeDialog: { width: CARD_WIDTH, backgroundColor: '#fff', borderRadius: 15, padding: 20, alignItems: 'center', elevation: 10, position: 'relative' },
-  envelopeTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, color: '#4630EB' },
+  envelopeTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, color: '#a29add' },
+
+  // 列表項目
   replyItem: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 0.5, borderBottomColor: '#eee' },
-  replyLinkText: { flex: 1, color: '#4630EB', fontWeight: '500' },
+  replyLinkText: { flex: 1, color: '#a29add', fontWeight: '500' },
   replyThumb: { width: 40, height: 40, borderRadius: 4, marginLeft: 10 },
-  closeBtn: { marginTop: 15, backgroundColor: '#4630EB', paddingHorizontal: 30, paddingVertical: 10, borderRadius: 20 },
+  closeBtn: { marginTop: 15, backgroundColor: '#a29add', paddingHorizontal: 30, paddingVertical: 10, borderRadius: 20 },
+
+  // --- 詳情滑出頁面 (更新後的對話佈局) ---
   detailSlide: { 
     position: 'absolute', 
     top: 0, 
@@ -567,10 +673,59 @@ const styles = StyleSheet.create({
     alignItems: 'center' 
   },
   backBtn: { position: 'absolute', left: 15, top: 15, zIndex: 10 },
-  backBtnText: { fontSize: 24, color: '#4630EB', fontWeight: 'bold' },
-  detailLabel: { color: '#4630EB', fontWeight: 'bold', marginTop: 10 },
-  detailText: { marginVertical: 5, textAlign: 'center' },
-  detailImage: { width: 200, height: 150, borderRadius: 10, marginTop: 10 },
+  backBtnText: { fontSize: 24, color: '#a29add', fontWeight: 'bold' },
+  
+  detailLabel: { 
+    color: '#a29add', 
+    fontWeight: 'bold', 
+    marginTop: 15, 
+    marginBottom: 8, 
+    fontSize: 14,
+    alignSelf: 'flex-start'
+  },
+
+  // 新增：對話列佈局
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#f9f9f9',
+    padding: 12,
+    borderRadius: 12,
+    width: '100%',
+  },
+  miniAvatar: {
+    width: 40,           // 直徑 40
+    height: 40,          // 直徑 40
+    borderRadius: 20,    // 圓形
+    marginRight: 10,
+    backgroundColor: '#eee',
+  },
+  infoContent: {
+    flex: 1,
+  },
+  infoId: {
+    fontSize: 11,
+    color: '#bbb',
+    marginBottom: 2,
+  },
+  infoText: {
+    fontSize: 15,
+    color: '#333',
+    lineHeight: 20,      // 設定行高為 20，兩行剛好等於頭貼高度 40
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#eee',
+    marginVertical: 12,
+    width: '100%',
+  },
+  detailImage: { 
+    width: '100%', 
+    height: 150, 
+    borderRadius: 10, 
+    marginTop: 10,
+    resizeMode: 'cover'
+  },
 });
 
 // Expo Router 頁面元件名稱需為 HomePage

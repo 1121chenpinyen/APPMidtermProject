@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, View, TextInput, Button, StyleSheet, Text } from 'react-native';
+import { Modal, View, TextInput, StyleSheet, Text, TouchableOpacity } from 'react-native';
 
 export default function FABDialog({ visible, onClose, text, setText, onSend }) {
   return (
@@ -11,7 +11,7 @@ export default function FABDialog({ visible, onClose, text, setText, onSend }) {
     >
       <View style={styles.overlay}>
         <View style={styles.dialog}>
-          <Text style={styles.label}>想說點什麼?</Text>
+          <Text style={styles.label}>說說你的煩惱</Text>
           <TextInput
             style={styles.input}
             value={text}
@@ -20,8 +20,13 @@ export default function FABDialog({ visible, onClose, text, setText, onSend }) {
             autoFocus
           />
           <View style={styles.buttonRow}>
-            <Button title="取消" onPress={onClose} />
-            <Button title="傳送" onPress={onSend} />
+            <TouchableOpacity style={[styles.btn, styles.cancelBtn]} onPress={onClose}>
+              <Text style={styles.cancelBtnText}>取消</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[styles.btn, styles.sendBtn]} onPress={onSend}>
+              <Text style={styles.sendBtnText}>傳送</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </View>
@@ -48,6 +53,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     fontWeight: 'bold',
     color: '#333',
+    textAlign: 'center',
   },
   input: {
     borderWidth: 1,
@@ -60,5 +66,30 @@ const styles = StyleSheet.create({
   buttonRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    gap: 10, // 讓兩個按鈕之間有點間距
+  },
+  // --- 以下是新增的按鈕樣式 ---
+  btn: {
+    flex: 1, // 讓兩個按鈕平分寬度
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelBtn: {
+    backgroundColor: '#f5f5f5', // 淺灰色背景
+  },
+  sendBtn: {
+    backgroundColor: '#a29add', // 你的主色調
+  },
+  cancelBtnText: {
+    color: '#666', // 灰色文字
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  sendBtnText: {
+    color: '#fff', // 白色文字
+    fontWeight: 'bold',
+    fontSize: 16,
   },
 });
